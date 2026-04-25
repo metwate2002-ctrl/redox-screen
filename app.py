@@ -14,11 +14,13 @@ import pickle
 import base64
 import matplotlib.pyplot as plt
 import warnings
+from io import BytesIO
+from PIL import Image
 warnings.filterwarnings("ignore")
 
 from rdkit import Chem
 from rdkit.Chem import Descriptors, rdMolDescriptors, Crippen
-from rdkit.Chem.Draw import rdMolDraw2D
+from rdkit.Chem.Draw import MolToImage
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -106,12 +108,13 @@ def get_descriptors(smiles):
     }
     return desc, mol
 
-def mol_to_svg(mol, size=(350, 280)):
-    drawer = rdMolDraw2D.MolDraw2DSVG(size[0], size[1])
-    drawer.drawOptions().addStereoAnnotation = True
-    drawer.DrawMolecule(mol)
-    drawer.FinishDrawing()
-    return drawer.GetDrawingText()
+def mol_to_image_html(mol, size=(350, 280)):
+    """Convert RDKit mol object to HTML img tag using PNG (no external libs)."""
+    img = MolToImage(mol, size=size)
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
+    return f'<img src="data:image/png;base64,{img_base64}" width="100%">'
 
 def predict(smiles):
     desc, mol = get_descriptors(smiles)
@@ -216,12 +219,8 @@ if run or smiles_input:
 
         with left:
             st.markdown("### 🧪 2D Molecular Structure")
-            svg = mol_to_svg(mol)
-            b64 = base64.b64encode(svg.encode()).decode()
-            st.markdown(
-                f'<img src="data:image/svg+xml;base64,{b64}" width="100%">',
-                unsafe_allow_html=True
-            )
+            html_img = mol_to_image_html(mol)
+            st.markdown(html_img, unsafe_allow_html=True)
 
         with right:
             st.markdown("### 📊 Molecular Properties")
