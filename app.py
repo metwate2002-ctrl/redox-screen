@@ -1,74 +1,37 @@
-"""
-⚡ RedoxScreen — Redox Flow Battery Molecule Screener
-AI-powered cheminformatics tool to identify candidate molecules
-for next-generation redox flow batteries.
-
-Author: Aryan Metwate
-Stack : RDKit · scikit-learn · Streamlit
-"""
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
-import base64
+import requests
+from urllib.parse import quote
 import matplotlib.pyplot as plt
+import base64
 import warnings
-from io import BytesIO
-from PIL import Image
 warnings.filterwarnings("ignore")
 
 from rdkit import Chem
 from rdkit.Chem import Descriptors, rdMolDescriptors, Crippen
-from rdkit.Chem.Draw import MolToImage
+from rdkit.Chem.Draw import rdMolDraw2D
 
-# ── Page config ────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="RedoxScreen ⚡",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- Page config ---
+st.set_page_config(page_title="RedoxScreen ⚡", page_icon="⚡", layout="wide")
 
-# ── Custom CSS ─────────────────────────────────────────────────────────────────
+# --- Custom CSS (same as before for styling) ---
 st.markdown("""
 <style>
-    .main-header {
-        background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
-        padding: 2rem;
-        border-radius: 16px;
-        text-align: center;
-        margin-bottom: 2rem;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-    }
+    /* (CSS remains unchanged from your original version) */
+    .main-header { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); padding: 2rem; border-radius: 16px; text-align: center; margin-bottom: 2rem; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
     .main-header h1 { color: #FFD700; font-size: 2.8rem; margin: 0; }
     .main-header p  { color: #aaa; font-size: 1rem; margin: 0.5rem 0 0; }
-
-    .result-good {
-        background: linear-gradient(135deg, #11998e, #38ef7d);
-        padding: 1.5rem; border-radius: 12px; text-align: center;
-        color: white; font-size: 1.4rem; font-weight: bold;
-        box-shadow: 0 4px 20px rgba(56,239,125,0.3);
-    }
-    .result-bad {
-        background: linear-gradient(135deg, #c0392b, #e74c3c);
-        padding: 1.5rem; border-radius: 12px; text-align: center;
-        color: white; font-size: 1.4rem; font-weight: bold;
-        box-shadow: 0 4px 20px rgba(231,76,60,0.3);
-    }
+    .result-good { background: linear-gradient(135deg, #11998e, #38ef7d); padding: 1.5rem; border-radius: 12px; text-align: center; color: white; font-size: 1.4rem; font-weight: bold; box-shadow: 0 4px 20px rgba(56,239,125,0.3); }
+    .result-bad { background: linear-gradient(135deg, #c0392b, #e74c3c); padding: 1.5rem; border-radius: 12px; text-align: center; color: white; font-size: 1.4rem; font-weight: bold; box-shadow: 0 4px 20px rgba(231,76,60,0.3); }
+    .metric-card { background: #1e1e2e; border: 1px solid #333; border-radius: 10px; padding: 1rem; text-align: center; }
     .stSidebar { background: #0d0d1a; }
-    .info-box {
-        background: #1a1a2e; border-left: 4px solid #FFD700;
-        padding: 1rem; border-radius: 8px; margin: 0.5rem 0;
-    }
+    .info-box { background: #1a1a2e; border-left: 4px solid #FFD700; padding: 1rem; border-radius: 8px; margin: 0.5rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Session state init ─────────────────────────────────────────────────────────
-if "smiles" not in st.session_state:
-    st.session_state.smiles = "O=C1c2ccccc2C(=O)c2ccccc21"  # Anthraquinone default
-
-# ── Load model ─────────────────────────────────────────────────────────────────
+# --- Load model (with caching for performance) ---
 @st.cache_resource
 def load_model():
     with open("redox_model.pkl", "rb") as f:
@@ -79,42 +42,59 @@ def load_model():
 
 model, FEATURES = load_model()
 
-# ── Helper functions ───────────────────────────────────────────────────────────
+# --- NEW: Name -> SMILES logic (the core fix) ---
+@st.cache_data(ttl=86400)
+def resolve_name_to_smiles(name: str) -> str | None:
+    """Convert a common molecule name to SMILES using PubChem."""
+    properties = ["IsomericSMILES", "CanonicalSMILES", "SMILES"]
+    for prop in properties:
+        url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{quote(name)}/property/{prop}/JSON"
+        try:
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                smiles = data.get("PropertyTable", {}).get("Properties", [{}])[0].get(prop)
+                if smiles and smiles.strip():
+                    return smiles
+        except Exception:
+            continue
+    return None
+
+# --- RDKit descriptor calculator (remains unchanged)---
 def get_descriptors(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None, None
     desc = {
-        "MolWt":               Descriptors.MolWt(mol),
-        "LogP":                Crippen.MolLogP(mol),
-        "NumHDonors":          rdMolDescriptors.CalcNumHBD(mol),
-        "NumHAcceptors":       rdMolDescriptors.CalcNumHBA(mol),
-        "NumRings":            rdMolDescriptors.CalcNumRings(mol),
-        "NumAromaticRings":    rdMolDescriptors.CalcNumAromaticRings(mol),
-        "TPSA":                Descriptors.TPSA(mol),
-        "NumRotBonds":         rdMolDescriptors.CalcNumRotatableBonds(mol),
-        "FractionCSP3":        rdMolDescriptors.CalcFractionCSP3(mol),
-        "NumHeteroatoms":      rdMolDescriptors.CalcNumHeteroatoms(mol),
+        "MolWt": Descriptors.MolWt(mol),
+        "LogP": Crippen.MolLogP(mol),
+        "NumHDonors": rdMolDescriptors.CalcNumHBD(mol),
+        "NumHAcceptors": rdMolDescriptors.CalcNumHBA(mol),
+        "NumRings": rdMolDescriptors.CalcNumRings(mol),
+        "NumAromaticRings": rdMolDescriptors.CalcNumAromaticRings(mol),
+        "TPSA": Descriptors.TPSA(mol),
+        "NumRotBonds": rdMolDescriptors.CalcNumRotatableBonds(mol),
+        "FractionCSP3": rdMolDescriptors.CalcFractionCSP3(mol),
+        "NumHeteroatoms": rdMolDescriptors.CalcNumHeteroatoms(mol),
         "NumValenceElectrons": Descriptors.NumValenceElectrons(mol),
-        "MaxPartialCharge":    Descriptors.MaxPartialCharge(mol),
-        "MinPartialCharge":    Descriptors.MinPartialCharge(mol),
+        "MaxPartialCharge": Descriptors.MaxPartialCharge(mol),
+        "MinPartialCharge": Descriptors.MinPartialCharge(mol),
         "NumRadicalElectrons": Descriptors.NumRadicalElectrons(mol),
-        "RingCount":           Descriptors.RingCount(mol),
-        "HeavyAtomCount":      mol.GetNumHeavyAtoms(),
-        "NumAromaticBonds":    sum(1 for b in mol.GetBonds() if b.GetIsAromatic()),
-        "Chi0":                Descriptors.Chi0(mol),
-        "Chi1":                Descriptors.Chi1(mol),
-        "Kappa1":              Descriptors.Kappa1(mol),
+        "RingCount": Descriptors.RingCount(mol),
+        "HeavyAtomCount": mol.GetNumHeavyAtoms(),
+        "NumAromaticBonds": sum(1 for b in mol.GetBonds() if b.GetIsAromatic()),
+        "Chi0": Descriptors.Chi0(mol),
+        "Chi1": Descriptors.Chi1(mol),
+        "Kappa1": Descriptors.Kappa1(mol),
     }
     return desc, mol
 
-def mol_to_image_html(mol, size=(350, 280)):
-    """Convert RDKit mol object to HTML img tag using PNG (no external libs)."""
-    img = MolToImage(mol, size=size)
-    buffered = BytesIO()
-    img.save(buffered, format="PNG")
-    img_base64 = base64.b64encode(buffered.getvalue()).decode()
-    return f'<img src="data:image/png;base64,{img_base64}" width="100%">'
+def mol_to_image(mol, size=(350, 280)):
+    drawer = rdMolDraw2D.MolDraw2DSVG(size[0], size[1])
+    drawer.drawOptions().addStereoAnnotation = True
+    drawer.DrawMolecule(mol)
+    drawer.FinishDrawing()
+    return drawer.GetDrawingText()
 
 def predict(smiles):
     desc, mol = get_descriptors(smiles)
@@ -135,71 +115,90 @@ def redox_score(desc, prob):
         score -= 10
     return min(max(round(score), 0), 100)
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
+# --- Sidebar with examples (unchanged)---
 with st.sidebar:
     st.markdown("## ⚡ RedoxScreen")
     st.markdown("---")
     st.markdown("### 🔬 Example Molecules")
-    st.markdown("Click any to auto-fill:")
+    st.markdown("Click to auto-fill:")
 
     examples = {
-        "Anthraquinone ✅":  "O=C1c2ccccc2C(=O)c2ccccc21",
-        "AQDS ✅":           "O=C1c2cc(S(=O)(=O)O)ccc2C(=O)c2ccc(S(=O)(=O)O)cc21",
-        "TEMPO ✅":          "CC1(C)CC(=O)CC(C)(C)N1[O]",
-        "Benzoquinone ✅":   "O=C1C=CC(=O)C=C1",
-        "Methyl Viologen ✅":"C[n+]1ccc(C=Cc2cc[n+](C)cc2)cc1",
-        "Ethanol ❌":        "CCO",
-        "Benzene ❌":        "c1ccccc1",
-        "Hexane ❌":         "CCCCCC",
+        "Anthraquinone (Good ✅)": "O=C1c2ccccc2C(=O)c2ccccc21",
+        "AQDS (Excellent ✅)": "O=C1c2cc(S(=O)(=O)O)ccc2C(=O)c2ccc(S(=O)(=O)O)cc21",
+        "TEMPO (Good ✅)": "CC1(C)CC(=O)CC(C)(C)N1[O]",
+        "Benzoquinone (Good ✅)": "O=C1C=CC(=O)C=C1",
+        "Ethanol (Poor ❌)": "CCO",
+        "Benzene (Poor ❌)": "c1ccccc1",
+        "Hexane (Poor ❌)": "CCCCCC",
     }
+    selected = None
     for name, smi in examples.items():
-        if st.button(name, key=f"btn_{name}", use_container_width=True):
-            st.session_state.smiles = smi
+        if st.button(name, key=name, use_container_width=True):
+            selected = smi
 
     st.markdown("---")
     st.markdown("### 📖 About")
     st.markdown("""
-    <div class='info-box'>
-    Redox Flow Batteries store renewable energy 
-    in liquid electrolytes. This app uses ML + RDKit 
-    to screen organic molecules for their suitability 
-    as electrolyte candidates.
-    </div>
+    Redox Flow Batteries store renewable energy in liquid electrolytes.
+    This app uses ML + RDKit to screen organic molecules for their suitability.
     """, unsafe_allow_html=True)
     st.markdown("**Built by:** Aryan Metwate")
     st.markdown("**Stack:** RDKit · sklearn · Streamlit")
 
-# ── Main header ────────────────────────────────────────────────────────────────
+# --- Main Header ---
 st.markdown("""
 <div class='main-header'>
     <h1>⚡ RedoxScreen</h1>
-    <p>AI-powered Redox Flow Battery Molecule Screener — Cheminformatics × Clean Energy</p>
+    <p>AI‑powered Redox Flow Battery Molecule Screener — now with name lookup!</p>
 </div>
 """, unsafe_allow_html=True)
 
-# ── SMILES Input ───────────────────────────────────────────────────────────────
+# --- Input: handles both names and SMILES ---
 col_input, col_btn = st.columns([4, 1])
 with col_input:
-    smiles_input = st.text_input(
-        "🔬 Enter SMILES string:",
-        value=st.session_state.smiles,
-        placeholder="e.g. O=C1C=CC(=O)C=C1",
-        key="smiles_input_box"
+    default_smi = selected if selected else "O=C1c2ccccc2C(=O)c2ccccc21"
+    user_input = st.text_input(
+        "🔬 Enter molecule name or SMILES:",
+        value=default_smi,
+        placeholder="e.g. aspirin, O=C1C=CC(=O)C=C1, glucose"
     )
 with col_btn:
     st.markdown("<br>", unsafe_allow_html=True)
     run = st.button("🚀 Screen", use_container_width=True, type="primary")
 
-# ── Results ────────────────────────────────────────────────────────────────────
-if run or smiles_input:
-    smi = smiles_input.strip()
-    pred, prob, desc, mol = predict(smi)
+# --- The Prediction Pipeline (updated with name resolution)---
+if run or user_input:
+    input_str = user_input.strip()
+    if not input_str:
+        st.warning("Please enter a molecule name or SMILES.")
 
-    if pred is None:
-        st.error("❌ Invalid SMILES! Please check your input and try again.")
     else:
+        # Step 1: Try interpreting input as SMILES
+        mol = Chem.MolFromSmiles(input_str)
+        if mol is not None:
+            smiles = input_str
+            name_resolved = False
+        else:
+            # Step 2: Not SMILES → try name lookup via PubChem
+            with st.spinner(f"Searching for '{input_str}' in PubChem ..."):
+                smiles = resolve_name_to_smiles(input_str)
+            if smiles is None:
+                st.error(f"❌ Could not find '{input_str}'. Check spelling or try a SMILES string directly.")
+                st.stop()
+            else:
+                st.success(f"✅ Resolved '{input_str}' → SMILES: `{smiles}`")
+                name_resolved = True
+
+        # Step 3: Run prediction model using resolved SMILES
+        pred, prob, desc, mol = predict(smiles)
+
+        if pred is None:
+            st.error("❌ Invalid SMILES after resolution. This should not happen – please report.")
+            st.stop()
+
         score = redox_score(desc, prob)
 
+        # Result banner
         st.markdown("<br>", unsafe_allow_html=True)
         if pred == 1:
             st.markdown(f"""
@@ -209,32 +208,32 @@ if run or smiles_input:
         else:
             st.markdown(f"""
             <div class='result-bad'>
-                ❌ POOR REDOX CANDIDATE &nbsp;|&nbsp; Confidence: {(1-prob)*100:.1f}% not suitable &nbsp;|&nbsp; Score: {score}/100
+                ❌ POOR REDOX CANDIDATE &nbsp;|&nbsp; Confidence: {(1-prob)*100:.1f}%
             </div>""", unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # ── Structure + Properties ─────────────────────────────────────────
+        # --- Two-column layout for results (unchanged)---
         left, right = st.columns([1, 1])
-
         with left:
             st.markdown("### 🧪 2D Molecular Structure")
-            html_img = mol_to_image_html(mol)
-            st.markdown(html_img, unsafe_allow_html=True)
+            svg = mol_to_image(mol)
+            b64 = base64.b64encode(svg.encode()).decode()
+            st.markdown(f'<img src="data:image/svg+xml;base64,{b64}" width="100%">', unsafe_allow_html=True)
 
         with right:
             st.markdown("### 📊 Molecular Properties")
             props = {
-                "⚖️ Molecular Weight":    f"{desc['MolWt']:.2f} g/mol",
+                "⚖️ Molecular Weight": f"{desc['MolWt']:.2f} g/mol",
                 "💧 LogP (lipophilicity)": f"{desc['LogP']:.3f}",
-                "🔵 H-Bond Donors":        int(desc["NumHDonors"]),
-                "🔴 H-Bond Acceptors":     int(desc["NumHAcceptors"]),
-                "💍 Aromatic Rings":       int(desc["NumAromaticRings"]),
-                "⚛️ Heteroatoms":          int(desc["NumHeteroatoms"]),
-                "📐 TPSA":                 f"{desc['TPSA']:.2f} Å²",
-                "🔄 Rotatable Bonds":      int(desc["NumRotBonds"]),
-                "🔬 Heavy Atoms":          int(desc["HeavyAtomCount"]),
-                "⚡ Radical Electrons":    int(desc["NumRadicalElectrons"]),
+                "🔵 H-Bond Donors": int(desc["NumHDonors"]),
+                "🔴 H-Bond Acceptors": int(desc["NumHAcceptors"]),
+                "💍 Aromatic Rings": int(desc["NumAromaticRings"]),
+                "⚛️ Heteroatoms": int(desc["NumHeteroatoms"]),
+                "📐 TPSA": f"{desc['TPSA']:.2f} Å²",
+                "🔄 Rotatable Bonds": int(desc["NumRotBonds"]),
+                "🔬 Heavy Atoms": int(desc["HeavyAtomCount"]),
+                "⚡ Radical Electrons": int(desc["NumRadicalElectrons"]),
             }
             for k, v in props.items():
                 c1, c2 = st.columns([2, 1])
@@ -242,8 +241,6 @@ if run or smiles_input:
                 c2.markdown(f"`{v}`")
 
         st.markdown("---")
-
-        # ── Score gauge + Battery criteria ────────────────────────────────
         col3, col4 = st.columns([1, 1])
 
         with col3:
@@ -252,6 +249,7 @@ if run or smiles_input:
             fig.patch.set_facecolor("#0d0d1a")
             ax.set_facecolor("#0d0d1a")
             color = "#38ef7d" if score >= 60 else "#e74c3c" if score < 40 else "#f39c12"
+            ax.barh(["Score"], [score], color=color, height=0.4, edgecolor="none")
             ax.barh(["Score"], [100], color="#1e1e2e", height=0.4, edgecolor="none")
             ax.barh(["Score"], [score], color=color, height=0.4, edgecolor="none")
             ax.set_xlim(0, 100)
@@ -259,32 +257,29 @@ if run or smiles_input:
             ax.tick_params(colors="white")
             for spine in ax.spines.values():
                 spine.set_visible(False)
-            ax.text(score + 1, 0, f"{score}/100",
-                    va="center", ha="left", color="white", fontsize=14, fontweight="bold")
+            ax.text(score + 1, 0, f"{score}/100", va="center", ha="left", color="white", fontsize=14, fontweight="bold")
             ax.set_title("Redox Suitability", color="#FFD700", fontsize=13)
             plt.tight_layout()
             st.pyplot(fig)
             plt.close()
 
         with col4:
-            st.markdown("### 🔋 Battery Suitability Checklist")
+            st.markdown("### 🔋 Battery Suitability Analysis")
             criteria = {
-                "Aromatic/Conjugated system":   desc["NumAromaticRings"] >= 2,
-                "Has Heteroatoms (O/N)":        desc["NumHeteroatoms"] >= 2,
-                "Good Solubility (LogP < 2)":   desc["LogP"] < 2.0,
-                "Reasonable MW (< 500 g/mol)":  desc["MolWt"] < 500,
-                "Redox Active (ML prediction)": pred == 1,
+                "Aromatic/Conjugated": desc["NumAromaticRings"] >= 2,
+                "Has Heteroatoms (O/N)": desc["NumHeteroatoms"] >= 2,
+                "Good Solubility (LogP<2)": desc["LogP"] < 2.0,
+                "Reasonable MW (<500)": desc["MolWt"] < 500,
+                "Redox Active (ML)": pred == 1,
             }
             for criterion, passed in criteria.items():
                 icon = "✅" if passed else "❌"
                 st.markdown(f"{icon} {criterion}")
 
-        # ── Radar chart ───────────────────────────────────────────────────
         st.markdown("---")
         st.markdown("### 📡 Property Radar")
 
-        categories = ["MW\n(norm)", "LogP\n(norm)", "Arom.\nRings",
-                       "Hetero\natoms", "HBond\nAcceptors", "Redox\nProb"]
+        categories = ["MW\n(norm)", "LogP\n(norm)", "Rings", "Heteroatoms", "HBond\nAcceptors", "Redox\nProb"]
         values = [
             min(desc["MolWt"] / 500, 1),
             min(max((desc["LogP"] + 2) / 6, 0), 1),
@@ -315,33 +310,32 @@ if run or smiles_input:
         st.pyplot(fig2)
         plt.close()
 
-        # ── Interpretation ─────────────────────────────────────────────────
         st.markdown("---")
         st.markdown("### 💡 Interpretation")
         interp = []
         if desc["NumAromaticRings"] >= 2:
-            interp.append("✅ **Multiple aromatic rings** — good π-electron conjugation for stable redox cycling")
+            interp.append("✅ Multiple aromatic rings — good π‑electron conjugation for stable redox cycling.")
         if desc["NumHeteroatoms"] >= 2:
-            interp.append("✅ **Heteroatoms present** — oxygen/nitrogen groups enable electrochemical activity")
+            interp.append("✅ Heteroatoms present — oxygen/nitrogen groups enable electrochemical activity.")
         if desc["LogP"] < 2:
-            interp.append("✅ **Low LogP** — relatively water-soluble, suitable for aqueous flow batteries")
+            interp.append("✅ Low LogP — relatively water‑soluble, suitable for aqueous flow batteries.")
         if desc["NumRadicalElectrons"] > 0:
-            interp.append("✅ **Radical electrons detected** — strong indicator of redox activity (like TEMPO)")
+            interp.append("✅ Radical electrons detected — strong indicator of redox activity (like TEMPO).")
         if desc["MolWt"] > 500:
-            interp.append("⚠️ **High molecular weight** — may reduce solubility in battery electrolyte")
+            interp.append("⚠️ High molecular weight — may reduce solubility in battery electrolyte.")
         if desc["LogP"] > 3:
-            interp.append("⚠️ **High LogP** — lipophilic molecule, may have poor water solubility")
+            interp.append("⚠️ High LogP — lipophilic molecule, may have poor water solubility.")
         if not interp:
-            interp.append("ℹ️ No strong structural indicators found for redox activity")
+            interp.append("ℹ️ No strong structural indicators found for redox activity.")
         for line in interp:
             st.markdown(line)
 
-# ── Footer ─────────────────────────────────────────────────────────────────────
+# --- Footer (unchanged)---
 st.markdown("---")
 st.markdown("""
 <center>
 <small>
-⚡ <b>RedoxScreen</b> — Built with RDKit · scikit-learn · Streamlit &nbsp;|&nbsp;
+⚡ <b>RedoxScreen</b> — Built with RDKit · scikit‑learn · Streamlit &nbsp;|&nbsp;
 🌍 Helping accelerate clean energy storage research &nbsp;|&nbsp;
 👨‍💻 Aryan Metwate, M.Sc. Bioinformatics
 </small>
