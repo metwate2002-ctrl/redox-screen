@@ -1,3 +1,12 @@
+"""
+⚡ RedoxScreen — Redox Flow Battery Molecule Screener
+AI-powered cheminformatics tool to identify candidate molecules
+for next-generation redox flow batteries.
+
+Author: Aryan Metwate
+Stack: RDKit · scikit-learn · Streamlit
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -16,10 +25,9 @@ from rdkit.Chem.Draw import rdMolDraw2D
 # --- Page config ---
 st.set_page_config(page_title="RedoxScreen ⚡", page_icon="⚡", layout="wide")
 
-# --- Custom CSS (same as before for styling) ---
+# --- Custom CSS (same as original) ---
 st.markdown("""
 <style>
-    /* (CSS remains unchanged from your original version) */
     .main-header { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); padding: 2rem; border-radius: 16px; text-align: center; margin-bottom: 2rem; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
     .main-header h1 { color: #FFD700; font-size: 2.8rem; margin: 0; }
     .main-header p  { color: #aaa; font-size: 1rem; margin: 0.5rem 0 0; }
@@ -31,7 +39,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Load model (with caching for performance) ---
+# --- Load model (with caching) ---
 @st.cache_resource
 def load_model():
     with open("redox_model.pkl", "rb") as f:
@@ -42,10 +50,9 @@ def load_model():
 
 model, FEATURES = load_model()
 
-# --- NEW: Name -> SMILES logic (the core fix) ---
+# --- Name -> SMILES resolver (same as before) ---
 @st.cache_data(ttl=86400)
 def resolve_name_to_smiles(name: str) -> str | None:
-    """Convert a common molecule name to SMILES using PubChem."""
     properties = ["IsomericSMILES", "CanonicalSMILES", "SMILES"]
     for prop in properties:
         url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{quote(name)}/property/{prop}/JSON"
@@ -56,11 +63,23 @@ def resolve_name_to_smiles(name: str) -> str | None:
                 smiles = data.get("PropertyTable", {}).get("Properties", [{}])[0].get(prop)
                 if smiles and smiles.strip():
                     return smiles
-        except Exception:
+        except:
             continue
+    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{quote(name)}/JSON"
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            comps = data.get("PC_Compounds", [])
+            if comps:
+                for p in comps[0].get("props", []):
+                    if p.get("urn", {}).get("label") in ["SMILES", "IsomericSMILES"]:
+                        return p.get("value", {}).get("sval")
+    except:
+        pass
     return None
 
-# --- RDKit descriptor calculator (remains unchanged)---
+# --- RDKit descriptor calculator ---
 def get_descriptors(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -115,10 +134,12 @@ def redox_score(desc, prob):
         score -= 10
     return min(max(round(score), 0), 100)
 
-# --- Sidebar with examples (unchanged)---
+# --- Sidebar with back button and examples ---
 with st.sidebar:
-    st.markdown("## ⚡ RedoxScreen")
+    # Back button to Chemistry Toolbox
+    st.markdown("[← Back to Chemistry Toolbox](https://metwate2002-ctrl.github.io/chemistry-toolbox/)")
     st.markdown("---")
+    st.markdown("## ⚡ RedoxScreen")
     st.markdown("### 🔬 Example Molecules")
     st.markdown("Click to auto-fill:")
 
@@ -166,20 +187,19 @@ with col_btn:
     st.markdown("<br>", unsafe_allow_html=True)
     run = st.button("🚀 Screen", use_container_width=True, type="primary")
 
-# --- The Prediction Pipeline (updated with name resolution)---
+# --- The Prediction Pipeline (with name resolution) ---
 if run or user_input:
     input_str = user_input.strip()
     if not input_str:
         st.warning("Please enter a molecule name or SMILES.")
-
     else:
-        # Step 1: Try interpreting input as SMILES
+        # Try interpreting as SMILES
         mol = Chem.MolFromSmiles(input_str)
         if mol is not None:
             smiles = input_str
             name_resolved = False
         else:
-            # Step 2: Not SMILES → try name lookup via PubChem
+            # Not SMILES → name lookup
             with st.spinner(f"Searching for '{input_str}' in PubChem ..."):
                 smiles = resolve_name_to_smiles(input_str)
             if smiles is None:
@@ -189,9 +209,8 @@ if run or user_input:
                 st.success(f"✅ Resolved '{input_str}' → SMILES: `{smiles}`")
                 name_resolved = True
 
-        # Step 3: Run prediction model using resolved SMILES
+        # Predict
         pred, prob, desc, mol = predict(smiles)
-
         if pred is None:
             st.error("❌ Invalid SMILES after resolution. This should not happen – please report.")
             st.stop()
@@ -213,7 +232,7 @@ if run or user_input:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # --- Two-column layout for results (unchanged)---
+        # Two-column layout for results
         left, right = st.columns([1, 1])
         with left:
             st.markdown("### 🧪 2D Molecular Structure")
@@ -330,7 +349,7 @@ if run or user_input:
         for line in interp:
             st.markdown(line)
 
-# --- Footer (unchanged)---
+# --- Footer ---
 st.markdown("---")
 st.markdown("""
 <center>
