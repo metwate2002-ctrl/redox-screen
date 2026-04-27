@@ -25,7 +25,7 @@ from rdkit.Chem.Draw import rdMolDraw2D
 # --- Page config ---
 st.set_page_config(page_title="RedoxScreen ⚡", page_icon="⚡", layout="wide")
 
-# --- Custom CSS (same as original) ---
+# --- Custom CSS ---
 st.markdown("""
 <style>
     .main-header { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); padding: 2rem; border-radius: 16px; text-align: center; margin-bottom: 2rem; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
@@ -50,9 +50,9 @@ def load_model():
 
 model, FEATURES = load_model()
 
-# --- Name -> SMILES resolver (same as before) ---
+# --- Name -> SMILES resolver ---
 @st.cache_data(ttl=86400)
-def resolve_name_to_smiles(name: str) -> str | None:
+def resolve_name_to_smiles(name: str):
     properties = ["IsomericSMILES", "CanonicalSMILES", "SMILES"]
     for prop in properties:
         url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{quote(name)}/property/{prop}/JSON"
@@ -134,10 +134,19 @@ def redox_score(desc, prob):
         score -= 10
     return min(max(round(score), 0), 100)
 
-# --- Sidebar with back button and examples ---
+# --- Sidebar with fixed back button (works in APK) ---
 with st.sidebar:
-    # Back button to Chemistry Toolbox
-    st.markdown("[← Back to Chemistry Toolbox](https://metwate2002-ctrl.github.io/chemistry-toolbox/)")
+    # HTML button that forces navigation
+    st.markdown(
+        """
+        <a href="https://metwate2002-ctrl.github.io/chemistry-toolbox/" target="_self">
+            <button style="width:100%; background-color:#ff4b4b; color:white; padding:8px; border:none; border-radius:5px; cursor:pointer; margin-bottom:10px;">
+                ← Back to Chemistry Toolbox
+            </button>
+        </a>
+        """,
+        unsafe_allow_html=True
+    )
     st.markdown("---")
     st.markdown("## ⚡ RedoxScreen")
     st.markdown("### 🔬 Example Molecules")
@@ -187,19 +196,17 @@ with col_btn:
     st.markdown("<br>", unsafe_allow_html=True)
     run = st.button("🚀 Screen", use_container_width=True, type="primary")
 
-# --- The Prediction Pipeline (with name resolution) ---
+# --- Prediction Pipeline ---
 if run or user_input:
     input_str = user_input.strip()
     if not input_str:
         st.warning("Please enter a molecule name or SMILES.")
     else:
-        # Try interpreting as SMILES
+        # Try as SMILES first
         mol = Chem.MolFromSmiles(input_str)
         if mol is not None:
             smiles = input_str
-            name_resolved = False
         else:
-            # Not SMILES → name lookup
             with st.spinner(f"Searching for '{input_str}' in PubChem ..."):
                 smiles = resolve_name_to_smiles(input_str)
             if smiles is None:
@@ -207,9 +214,7 @@ if run or user_input:
                 st.stop()
             else:
                 st.success(f"✅ Resolved '{input_str}' → SMILES: `{smiles}`")
-                name_resolved = True
 
-        # Predict
         pred, prob, desc, mol = predict(smiles)
         if pred is None:
             st.error("❌ Invalid SMILES after resolution. This should not happen – please report.")
@@ -217,7 +222,6 @@ if run or user_input:
 
         score = redox_score(desc, prob)
 
-        # Result banner
         st.markdown("<br>", unsafe_allow_html=True)
         if pred == 1:
             st.markdown(f"""
@@ -232,7 +236,7 @@ if run or user_input:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Two-column layout for results
+        # Two-column layout
         left, right = st.columns([1, 1])
         with left:
             st.markdown("### 🧪 2D Molecular Structure")
@@ -268,9 +272,9 @@ if run or user_input:
             fig.patch.set_facecolor("#0d0d1a")
             ax.set_facecolor("#0d0d1a")
             color = "#38ef7d" if score >= 60 else "#e74c3c" if score < 40 else "#f39c12"
-            ax.barh(["Score"], [score], color=color, height=0.4, edgecolor="none")
-            ax.barh(["Score"], [100], color="#1e1e2e", height=0.4, edgecolor="none")
-            ax.barh(["Score"], [score], color=color, height=0.4, edgecolor="none")
+            ax.barh(["Score"], [score], color=color, height=0.4)
+            ax.barh(["Score"], [100], color="#1e1e2e", height=0.4)
+            ax.barh(["Score"], [score], color=color, height=0.4)
             ax.set_xlim(0, 100)
             ax.set_xlabel("Score / 100", color="white")
             ax.tick_params(colors="white")
